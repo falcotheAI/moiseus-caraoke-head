@@ -216,10 +216,12 @@ async def upload_files(
         # Save to database
         await db.projects.insert_one(project.dict())
         
-        # Save files temporarily
-        temp_dir = tempfile.mkdtemp()
-        audio_path = os.path.join(temp_dir, audio_file.filename)
-        text_path = os.path.join(temp_dir, text_file.filename)
+        # Create project directory for permanent storage
+        project_dir = ROOT_DIR / "projects" / project.id
+        project_dir.mkdir(parents=True, exist_ok=True)
+        
+        audio_path = project_dir / audio_file.filename
+        text_path = project_dir / text_file.filename
         
         with open(audio_path, 'wb') as f:
             shutil.copyfileobj(audio_file.file, f)
@@ -228,7 +230,7 @@ async def upload_files(
             shutil.copyfileobj(text_file.file, f)
         
         # Start processing in background
-        asyncio.create_task(process_audio_text(project.id, audio_path, text_path, temp_dir))
+        asyncio.create_task(process_audio_text(project.id, str(audio_path), str(text_path), str(project_dir)))
         
         return {"project_id": project.id, "status": "processing"}
         
