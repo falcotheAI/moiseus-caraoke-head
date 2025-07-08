@@ -238,7 +238,7 @@ async def upload_files(
         logging.error(f"Error uploading files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_audio_text(project_id: str, audio_path: str, text_path: str, temp_dir: str):
+async def process_audio_text(project_id: str, audio_path: str, text_path: str, project_dir: str):
     """Process audio and text files asynchronously"""
     try:
         # Extract text from file
@@ -263,8 +263,8 @@ async def process_audio_text(project_id: str, audio_path: str, text_path: str, t
             }
         )
         
-        # Clean up temporary files
-        shutil.rmtree(temp_dir)
+        # No need to clean up - we're keeping the files
+        logging.info(f"Project {project_id} processed successfully")
         
     except Exception as e:
         logging.error(f"Error processing audio: {e}")
