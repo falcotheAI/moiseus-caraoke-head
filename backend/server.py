@@ -292,6 +292,31 @@ async def get_project(project_id: str):
     # Convert MongoDB document to dictionary and handle ObjectId
     return {k: str(v) if k == "_id" else v for k, v in project.items()}
 
+@api_router.get("/projects/{project_id}/audio")
+async def get_audio_file(project_id: str):
+    """Get audio file for a project"""
+    project = await db.projects.find_one({"id": project_id})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Find the audio file in the project directory
+    project_dir = ROOT_DIR / "projects" / project_id
+    audio_filename = project.get('audio_filename')
+    
+    if not audio_filename:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    
+    audio_path = project_dir / audio_filename
+    
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found on disk")
+    
+    return FileResponse(
+        audio_path,
+        media_type='audio/wav',
+        filename=audio_filename
+    )
+
 @api_router.post("/projects/{project_id}/correct")
 async def correct_timing(project_id: str, corrections: List[TimingCorrection]):
     """Apply timing corrections"""
