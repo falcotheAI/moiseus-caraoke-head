@@ -287,7 +287,8 @@ async def get_project(project_id: str):
     project = await db.projects.find_one({"id": project_id})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project
+    # Convert MongoDB document to dictionary and handle ObjectId
+    return {k: str(v) if k == "_id" else v for k, v in project.items()}
 
 @api_router.post("/projects/{project_id}/correct")
 async def correct_timing(project_id: str, corrections: List[TimingCorrection]):
