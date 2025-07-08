@@ -87,8 +87,12 @@ def clean_text(text: str) -> str:
 
 def create_segments_from_text(text: str, audio_duration: float) -> List[dict]:
     """Create evenly spaced segments from text"""
-    words = text.split()
+    words = clean_text(text).split()
     total_words = len(words)
+    
+    if total_words == 0:
+        return []
+    
     time_per_word = audio_duration / total_words if total_words > 0 else 1.0
     
     segments = []
