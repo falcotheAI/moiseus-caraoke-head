@@ -11,15 +11,15 @@ from typing import List, Optional
 import uuid
 from datetime import datetime
 import tempfile
-import whisperx
-import ffmpeg
-import json
 import docx
 import re
 import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 import asyncio
 import shutil
+import wave
+import struct
+import math
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -44,7 +44,7 @@ class SubtitleProject(BaseModel):
     language: str
     status: str = "processing"
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    whisper_transcription: Optional[dict] = None
+    audio_duration: Optional[float] = None
     aligned_segments: Optional[List[dict]] = None
     user_corrections: Optional[List[dict]] = None
 
@@ -54,26 +54,17 @@ class TimingCorrection(BaseModel):
     new_start_time: float
     new_end_time: float
 
-# Global variables for model management
-whisper_model = None
-align_model = None
-metadata = None
-
-def load_whisper_model():
-    """Load Whisper model on startup"""
-    global whisper_model, align_model, metadata
+def get_audio_duration(file_path: str) -> float:
+    """Get audio duration from WAV file"""
     try:
-        # Load Whisper model
-        whisper_model = whisperx.load_model("base", device="cpu", language="ru")
-        
-        # Load alignment model
-        align_model, metadata = whisperx.load_align_model(language_code="ru", device="cpu")
-        
-        logging.info("Whisper models loaded successfully")
+        with wave.open(file_path, 'rb') as audio_file:
+            frames = audio_file.getnframes()
+            sample_rate = audio_file.getframerate()
+            duration = frames / float(sample_rate)
+            return duration
     except Exception as e:
-        logging.error(f"Error loading Whisper models: {e}")
-        # Fallback to simpler model if needed
-        whisper_model = None
+        logging.error(f"Error getting audio duration: {e}")
+        return 120.0  # Default to 2 minutes
 
 def extract_text_from_file(file_path: str) -> str:
     """Extract text from .txt or .docx file"""
@@ -94,57 +85,44 @@ def clean_text(text: str) -> str:
     text = re.sub(r'[^\w\s\-\.,!?]', '', text)
     return text
 
-def align_text_with_whisper(whisper_result: dict, original_text: str) -> List[dict]:
-    """Align original text with Whisper transcription"""
-    whisper_text = whisper_result.get('text', '')
-    original_clean = clean_text(original_text)
-    whisper_clean = clean_text(whisper_text)
+def create_segments_from_text(text: str, audio_duration: float) -> List[dict]:
+    """Create evenly spaced segments from text"""
+    words = text.split()
+    total_words = len(words)
+    time_per_word = audio_duration / total_words if total_words > 0 else 1.0
     
-    # Split into words
-    original_words = original_clean.split()
-    whisper_segments = whisper_result.get('segments', [])
+    segments = []
+    current_time = 0
     
-    aligned_segments = []
+    # Group words into segments of roughly 5-10 words each
+    words_per_segment = 7  # Target average
+    current_segment = []
+    current_segment_words = []
     
-    for segment in whisper_segments:
-        segment_words = segment.get('words', [])
-        if not segment_words:
-            continue
-            
-        # Find best matching words from original text
-        segment_text = segment.get('text', '').strip()
-        
-        # Use sequence matching to find similar parts
-        matcher = SequenceMatcher(None, segment_text.lower(), original_clean.lower())
-        
-        aligned_words = []
-        for word_info in segment_words:
-            word = word_info.get('word', '').strip()
-            start = word_info.get('start', 0)
-            end = word_info.get('end', 0)
-            
-            # Find closest word in original text
-            best_match = word
-            for orig_word in original_words:
-                if orig_word.lower() in word.lower() or word.lower() in orig_word.lower():
-                    best_match = orig_word
-                    break
-            
-            aligned_words.append({
-                'word': best_match,
-                'start': round(start, 1),
-                'end': round(end, 1),
-                'confidence': word_info.get('confidence', 0.8)
-            })
-        
-        aligned_segments.append({
-            'start': round(segment.get('start', 0), 1),
-            'end': round(segment.get('end', 0), 1),
-            'text': segment_text,
-            'words': aligned_words
+    for i, word in enumerate(words):
+        current_segment.append(word)
+        current_segment_words.append({
+            'word': word,
+            'start': round(current_time, 1),
+            'end': round(current_time + time_per_word, 1),
+            'confidence': 0.8
         })
+        current_time += time_per_word
+        
+        # Create a new segment when we reach the target size or at the end
+        if len(current_segment) >= words_per_segment or i == len(words) - 1:
+            if current_segment:
+                segment_text = ' '.join(current_segment)
+                segments.append({
+                    'start': round(current_segment_words[0]['start'], 1),
+                    'end': round(current_segment_words[-1]['end'], 1),
+                    'text': segment_text,
+                    'words': current_segment_words
+                })
+                current_segment = []
+                current_segment_words = []
     
-    return aligned_segments
+    return segments
 
 def generate_ttml(segments: List[dict], project_name: str) -> str:
     """Generate TTML subtitle file"""
@@ -179,7 +157,7 @@ def generate_lrc(segments: List[dict], project_name: str) -> str:
     lrc_content = f"[ti:{project_name}]\n"
     lrc_content += f"[ar:Generated by Karaoke Subtitles]\n"
     lrc_content += f"[al:Karaoke]\n"
-    lrc_content += f"[by:Whisper AI]\n\n"
+    lrc_content += f"[by:Auto-Timing]\n\n"
     
     for segment in segments:
         # Convert time to MM:SS.xx format
@@ -259,58 +237,25 @@ async def process_audio_text(project_id: str, audio_path: str, text_path: str, t
     try:
         # Extract text from file
         original_text = extract_text_from_file(text_path)
+        original_text = clean_text(original_text)
         
-        # Load audio
-        audio = whisperx.load_audio(audio_path)
+        # Get audio duration
+        audio_duration = get_audio_duration(audio_path)
         
-        # Transcribe with Whisper
-        if whisper_model:
-            result = whisper_model.transcribe(audio, batch_size=16)
-            
-            # Align with original text
-            aligned_segments = align_text_with_whisper(result, original_text)
-            
-            # Update project in database
-            await db.projects.update_one(
-                {"id": project_id},
-                {
-                    "$set": {
-                        "whisper_transcription": result,
-                        "aligned_segments": aligned_segments,
-                        "status": "completed"
-                    }
+        # Create segments with evenly spaced timing
+        segments = create_segments_from_text(original_text, audio_duration)
+        
+        # Update project in database
+        await db.projects.update_one(
+            {"id": project_id},
+            {
+                "$set": {
+                    "audio_duration": audio_duration,
+                    "aligned_segments": segments,
+                    "status": "completed"
                 }
-            )
-        else:
-            # Fallback: create dummy segments
-            words = original_text.split()
-            segments = []
-            time_per_word = 0.5  # 500ms per word
-            
-            current_time = 0
-            for i, word in enumerate(words):
-                segments.append({
-                    'start': round(current_time, 1),
-                    'end': round(current_time + time_per_word, 1),
-                    'text': word,
-                    'words': [{
-                        'word': word,
-                        'start': round(current_time, 1),
-                        'end': round(current_time + time_per_word, 1),
-                        'confidence': 0.8
-                    }]
-                })
-                current_time += time_per_word
-            
-            await db.projects.update_one(
-                {"id": project_id},
-                {
-                    "$set": {
-                        "aligned_segments": segments,
-                        "status": "completed"
-                    }
-                }
-            )
+            }
+        )
         
         # Clean up temporary files
         shutil.rmtree(temp_dir)
@@ -417,11 +362,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize models on startup"""
-    load_whisper_model()
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
