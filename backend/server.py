@@ -275,7 +275,11 @@ async def process_audio_text(project_id: str, audio_path: str, text_path: str, t
 async def get_projects():
     """Get all projects"""
     projects = await db.projects.find().to_list(100)
-    return projects
+    # Convert MongoDB documents to dictionaries and handle ObjectId
+    return [
+        {k: str(v) if k == "_id" else v for k, v in project.items()}
+        for project in projects
+    ]
 
 @api_router.get("/projects/{project_id}")
 async def get_project(project_id: str):
